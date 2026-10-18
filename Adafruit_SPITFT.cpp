@@ -1066,6 +1066,23 @@ void Adafruit_SPITFT::writePixels(uint16_t *colors, uint32_t len, bool block,
     swapBytes(colors, len); // big-to-little endian to restore pixel buffer
   }
   return;
+#elif defined(ARDUINO_ARCH_EDISON)
+  if (connection == TFT_HARD_SPI) {
+    // Each SPI transfer is a system call here (Linux spidev) with a fixed
+    // cost far above that of a few bytes, so send pixels in blocks. Through
+    // a copy, as transfer() replaces what it sends with what it receives.
+    uint16_t buf[2048];
+    while (len) {
+      uint32_t count = min(len, (uint32_t)(sizeof(buf) / sizeof(buf[0])));
+      for (uint32_t i = 0; i < count; i++) {
+        buf[i] = bigEndian ? colors[i] : __builtin_bswap16(colors[i]);
+      }
+      hwspi._spi->transfer(buf, 2 * count);
+      colors += count;
+      len -= count;
+    }
+    return;
+  }
 #elif defined(USE_SPI_DMA) &&                                                  \
     (defined(__SAMD51__) || defined(ARDUINO_SAMD_ZERO))
   if ((connection == TFT_HARD_SPI) || (connection == TFT_PARALLEL)) {
@@ -1308,6 +1325,21 @@ void Adafruit_SPITFT::writeColor(uint16_t color, uint32_t len) {
       rt_free(pixbuf);
     }
 #undef QUICKPATH_MAX_LEN
+    return;
+  }
+#elif defined(ARDUINO_ARCH_EDISON)
+  if (connection == TFT_HARD_SPI) {
+    // Send the colour in blocks too: writePixels() leaves buf as it is.
+    uint16_t buf[2048];
+    uint32_t count = min(len, (uint32_t)(sizeof(buf) / sizeof(buf[0])));
+    for (uint32_t i = 0; i < count; i++) {
+      buf[i] = color;
+    }
+    while (len) {
+      count = min(len, count);
+      writePixels(buf, count, true, false);
+      len -= count;
+    }
     return;
   }
 #else // !ESP32
@@ -2468,7 +2500,7 @@ void Adafruit_SPITFT::SPI_WRITE16(uint16_t w) {
     spi_inst_t *pi_spi = hwspi._spi == &SPI ? __SPI0_DEVICE : __SPI1_DEVICE;
     w = __builtin_bswap16(w);
     spi_write_blocking(pi_spi, (uint8_t *)&w, 2);
-#elif defined(ARDUINO_ARCH_RTTHREAD)
+#elif defined(ARDUINO_ARCH_RTTHREAD) || defined(ARDUINO_ARCH_EDISON)
     hwspi._spi->transfer16(w);
 #else
     // MSB, LSB because TFTs are generally big-endian
@@ -2529,6 +2561,10 @@ void Adafruit_SPITFT::SPI_WRITE32(uint32_t l) {
 #elif defined(ARDUINO_ARCH_RTTHREAD)
     hwspi._spi->transfer16(l >> 16);
     hwspi._spi->transfer16(l);
+#elif defined(ARDUINO_ARCH_EDISON)
+    uint8_t buf[4] = {(uint8_t)(l >> 24), (uint8_t)(l >> 16), (uint8_t)(l >> 8),
+                      (uint8_t)l};
+    hwspi._spi->transfer(buf, 4);
 #else
     hwspi._spi->transfer(l >> 24);
     hwspi._spi->transfer(l >> 16);
